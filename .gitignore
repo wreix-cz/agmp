@@ -1,0 +1,32 @@
+# Local/user library data
+library/
+
+# Generated web and build output
+node_modules/
+www/
+dist/
+build/
+
+# Android build output
+android/.gradle/
+android/app/build/
+android/build/
+
+# Local toolchains and caches
+.toolchain/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs and local secrets
+*.log
+.env
+.env.*
+!.env.example

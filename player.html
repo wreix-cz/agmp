@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<title>Local Music</title>
+<link rel="stylesheet" href="ui/app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-logo" aria-hidden="true">&#9835;</span><span class="brand-text">Local Music</span></div>
+
+    <nav class="nav" aria-label="Main">
+      <button class="nav-btn" type="button" data-view="home">Home</button>
+      <button class="nav-btn" type="button" data-view="songs">Songs</button>
+      <button class="nav-btn" type="button" data-view="liked">Liked</button>
+      <button class="nav-btn" type="button" data-view="stats">Stats</button>
+      <button class="nav-btn" type="button" data-view="discover">Discover</button>
+    </nav>
+
+    <div class="side-head">
+      <span>Playlists</span>
+      <button class="ghost-btn" id="newPlaylistBtn" type="button" title="New playlist" aria-label="New playlist">+</button>
+    </div>
+    <div class="side-body" id="playlistNav"></div>
+
+    <div class="side-foot">
+      <div class="summary" id="librarySummary">Loading library&hellip;</div>
+      <div class="storage-readout" id="storageReadout"></div>
+      <div class="status" id="statusLine"></div>
+      <div class="pickers">
+        <button class="ghost-btn picker" id="addFilesBtn" type="button">Add audio files</button>
+        <button class="ghost-btn picker" id="addFolderBtn" type="button">Add folder</button>
+        <button class="ghost-btn device-import" id="deviceImportBtn" type="button">Import from device</button>
+        <input type="file" id="filePicker" accept="audio/*" multiple hidden>
+        <input type="file" id="folderPicker" webkitdirectory directory multiple hidden>
+        <input type="file" id="deviceFilePicker" accept="audio/*" multiple hidden>
+        <input type="file" id="lyricsPicker" accept=".lrc,text/plain" hidden>
+      </div>
+      <button class="ghost-btn" id="syncLibraryBtn" type="button">Sync library</button>
+      <button class="ghost-btn" id="retryFailedBtn" type="button" hidden>Retry failed imports</button>
+      <button class="ghost-btn" id="reloadLibrary" type="button">Reload library</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <form class="import-bar" id="importBar">
+        <input class="import-input" id="playlistUrl" type="url" inputmode="url"
+               placeholder="Paste a Spotify, YouTube Music or YouTube playlist link"
+               autocomplete="off" spellcheck="false" aria-label="Playlist link">
+        <button class="import-btn" id="importBtn" type="submit">Import</button>
+      </form>
+      <div class="top-actions">
+        <button class="ghost-btn" id="paletteBtn" type="button" aria-label="Search and commands">Search</button>
+        <button class="ghost-btn" id="topSyncBtn" type="button">Sync</button>
+      </div>
+    </div>
+
+    <div class="banner" id="banner" hidden>
+      <span id="bannerBody"></span>
+      <button class="banner-close" id="bannerClose" type="button" aria-label="Dismiss">&times;</button>
+    </div>
+
+    <section class="import-panel" id="importPanel" hidden aria-live="polite">
+      <div class="import-head">
+        <span id="importTitle">Importing&hellip;</span>
+        <button class="ghost-btn" id="importClose" type="button" aria-label="Hide import log">&times;</button>
+      </div>
+      <pre class="import-log" id="importLog"></pre>
+    </section>
+
+    <section class="view" id="view" tabindex="-1"></section>
+    <section class="lyrics-panel" id="lyricsPanel" hidden aria-label="Lyrics">
+      <div class="lyrics-head">
+        <h2 class="section-title">Lyrics</h2>
+        <span class="lyrics-status" id="lyricsStatus"></span>
+      </div>
+      <div class="lyrics-body" id="lyricsBody"></div>
+    </section>
+  </main>
+</div>
+
+<footer class="player">
+  <div class="np">
+    <div class="np-cover" id="coverText" aria-hidden="true">&#9834;</div>
+    <div class="np-text">
+      <span class="np-title" id="npTitle">Nothing playing</span>
+      <span class="np-artist" id="npArtist">Pick a track to start</span>
+    </div>
+    <button class="mini-btn np-like" id="likeBtn" type="button" title="Like" aria-label="Like track" hidden>&#9825;</button>
+  </div>
+
+  <div class="controls">
+    <div class="buttons">
+      <button class="ctrl" id="shuffleBtn" type="button" title="Shuffle: off" aria-label="Shuffle off" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5M21 3l-8.5 8.5M16 21h5v-5M21 21l-6.5-6.5M3 4l4.5 4.5M3 20l7-7"/></svg>
+      </button>
+      <button class="ctrl" id="prevBtn" type="button" title="Previous" aria-label="Previous track">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14L8 12zM5 5v14"/></svg>
+      </button>
+      <button class="play-btn" id="playBtn" type="button" title="Play" aria-label="Play">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg>
+      </button>
+      <button class="ctrl" id="nextBtn" type="button" title="Next" aria-label="Next track">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14l10-7zM19 5v14"/></svg>
+      </button>
+      <button class="ctrl" id="repeatBtn" type="button" title="Repeat: off" aria-label="Repeat off">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V7a3 3 0 013-3h10l-3-3M20 15v2a3 3 0 01-3 3H7l3 3"/></svg>
+      </button>
+    </div>
+    <div class="progress">
+      <span class="time" id="timeCurrent">0:00</span>
+      <input class="range" id="seek" type="range" min="0" max="1" step="0.1" value="0" aria-label="Seek">
+      <span class="time" id="timeTotal">0:00</span>
+    </div>
+  </div>
+
+  <div class="right">
+    <button class="queue-btn" id="queueBtn" type="button" aria-expanded="false">
+      Queue <span id="queueCount">0</span>
+    </button>
+    <button class="mini-btn" id="crossfadeBtn" type="button" title="Crossfade off">Fade off</button>
+    <button class="mini-btn" id="speedBtn" type="button" title="Playback speed">1x</button>
+    <button class="mini-btn" id="sleepBtn" type="button" title="Sleep timer">Sleep</button>
+    <span class="sleep-countdown" id="sleepCountdown" aria-live="polite"></span>
+    <div class="vol">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4zM17 8a5 5 0 010 8"/></svg>
+      <input class="range" id="volume" type="range" min="0" max="1" step="0.01" value="0.9" aria-label="Volume">
+      <span class="vol-value" id="volValue">90%</span>
+    </div>
+  </div>
+</footer>
+
+<div class="queue-drawer" id="queueDrawer" aria-hidden="true">
+  <div class="queue-head">
+    <span id="queueTitle">Queue</span>
+    <button class="ghost-btn drawer-clear" id="queueClear" type="button">Clear</button>
+    <button class="ghost-btn drawer-close" id="queueClose" type="button" aria-label="Close queue">&times;</button>
+  </div>
+  <div class="queue-list" id="queueList"></div>
+  <div class="empty" id="queueEmpty" hidden>Nothing queued yet. Play a track or a playlist.</div>
+</div>
+
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <h2 class="modal-title" id="modalTitle">New playlist</h2>
+    <p class="modal-body" id="modalBody" hidden></p>
+    <div class="sync-fields" id="syncFields" hidden>
+      <label class="modal-label" for="syncHost">Desktop address</label>
+      <input class="modal-input" id="syncHost" type="url" inputmode="url" placeholder="http://192.168.1.10:12345">
+      <label class="modal-label" for="syncCode">Pairing code</label>
+      <input class="modal-input" id="syncCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456">
+    </div>
+    <input class="modal-input" id="modalInput" type="text" autocomplete="off" spellcheck="false">
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modalCancel" type="button">Cancel</button>
+      <button class="btn btn-primary" id="modalOk" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<audio id="audio" preload="metadata"></audio>
+<audio id="audioNext" preload="metadata"></audio>
+
+<div class="palette-backdrop" id="palette" hidden>
+  <div class="palette-card" role="dialog" aria-modal="true" aria-labelledby="paletteTitle">
+    <h2 class="palette-title" id="paletteTitle">Search and commands</h2>
+    <input class="palette-input" id="paletteInput" type="search" autocomplete="off"
+           placeholder="Search tracks, playlists, or commands" aria-label="Search tracks, playlists, or commands">
+    <div class="palette-results" id="paletteResults" role="listbox" aria-label="Search results"></div>
+  </div>
+</div>
+
+<script src="ui/mobile.js"></script>
+<script src="ui/engine.js"></script>
+<script src="ui/ui.js"></script>
+</body>
+</html>

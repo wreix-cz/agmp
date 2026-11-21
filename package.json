@@ -1,0 +1,69 @@
+{
+  "name": "local-music-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local-first playlist importer, downloader and offline player for desktop and mobile.",
+  "license": "UNLICENSED",
+  "homepage": "https://local-music.invalid/",
+  "author": {
+    "name": "Local Music",
+    "email": "local-music@localhost"
+  },
+  "desktopName": "local-music.desktop",
+  "main": "desktop/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --linux",
+    "sync:mobile": "node scripts/sync-web.mjs",
+    "mobile:sync": "node scripts/sync-web.mjs && cap sync",
+    "mobile:open": "node scripts/sync-web.mjs && cap open android",
+    "mobile:build": "node scripts/sync-web.mjs && cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/ios": "^8.6.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2",
+    "electron": "^45.4.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "dev.localmusic.player",
+    "productName": "Local Music",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "desktop/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "player.html",
+        "to": "player.html"
+      },
+      {
+        "from": "ui",
+        "to": "ui"
+      },
+      {
+        "from": "importer.py",
+        "to": "importer.py"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "rpm"
+      ],
+      "icon": "build/icon.png",
+      "syncDesktopName": true,
+      "category": "AudioVideo",
+      "synopsis": "Offline music library built from a playlist link",
+      "description": "Paste a Spotify or YouTube Music playlist link, download the audio locally and play it offline."
+    }
+  }
+}

@@ -1,0 +1,25 @@
+# songs.txt — the importer's default track list.
+#
+# One track per line, in the order you want them in the library/player queue:
+#
+#     Artist - Title
+#
+# Optional duration hint (helps candidate scoring pick the right upload):
+#
+#     Artist - Title | 3:45
+#
+# Notes:
+#   * Lines starting with # are comments and are ignored.
+#   * Leading bullets/numbering ("- ", "1. ") are stripped.
+#   * A line without " - " is treated as a title with no artist.
+#   * Separators can be " - ", a tab, or an en/em dash.
+#   * Re-running the importer is safe: already-downloaded tracks are skipped.
+#
+# Replace these examples with your own music.
+
+Daft Punk - Get Lucky | 4:08
+Fleetwood Mac - Dreams | 4:17
+Nina Simone - Feeling Good | 2:54
+The Midnight - Sunset | 5:20
+Khruangbin - August 10 | 4:34
+Bill Withers - Lovely Day | 4:15

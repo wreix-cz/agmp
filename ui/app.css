@@ -460,6 +460,18 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .trow-btn:hover { color: var(--text); background: rgba(255, 255, 255, 0.12); }
 .trow-actions { display: flex; justify-content: flex-end; gap: 2px; }
 .trow.is-missing .trow-title { color: #ffb74d; }
+/* Importer confidence marker: a match that scored close to the runner-up. */
+.trow-flag {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 183, 77, 0.45);
+  border-radius: 99px;
+  color: #ffb74d;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 
 /* playlist hero */
 .pl-hero { display: flex; align-items: flex-end; gap: 20px; margin: 4px 0 20px; }
@@ -789,6 +801,24 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .modal-body { white-space: pre-line; }
 .modal-label { display: block; margin: 0 0 5px; color: var(--muted); font-size: 12px; }
 .sync-fields { margin-bottom: 4px; }
+.account-fields { margin-bottom: 4px; }
+.account-line {
+  margin: 0 0 12px;
+  color: var(--text-dim);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.account-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.account-hint {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel-2, #161b26);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
 .modal-input {
   width: 100%;
   margin-bottom: 16px;

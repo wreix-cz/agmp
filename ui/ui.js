@@ -444,6 +444,12 @@ function trackRow(track, opts) {
   var copy = h('span', 'trow-copy');
   copy.appendChild(h('span', 'trow-title', track.title));
   copy.appendChild(h('span', 'trow-artist', track.artist));
+  if (track.needsReview) {
+    var reviewFlag = h('span', 'trow-flag', 'review');
+    reviewFlag.title = 'Low-confidence match \u2014 check that this is the right recording';
+    reviewFlag.setAttribute('aria-label', 'Low-confidence match');
+    copy.appendChild(reviewFlag);
+  }
   main.appendChild(copy);
   main.addEventListener('click', function () { o.onPlay(track); });
   row.appendChild(main);
@@ -690,7 +696,9 @@ function renderSongs(root) {
       index: index + 1,
       onPlay: function (item) { playList(state.naturalOrder, item.key, 'Library'); }
     });
-    row.dataset.search = (track.title + ' ' + track.artist + ' ' + track.fileName).toLowerCase();
+    row.dataset.search = (
+      track.title + ' ' + track.artist + ' ' + track.fileName + (track.needsReview ? ' needs review' : '')
+    ).toLowerCase();
     rows.push(row);
     table.appendChild(row);
   });
@@ -843,6 +851,8 @@ function renderPlaylist(root, id) {
       okLabel: 'Delete',
       danger: true,
       onConfirm: function () {
+        state.deletedPlaylists[playlist.id] = Date.now();
+        persistAccountState();
         state.playlists = state.playlists.filter(function (item) { return item.id !== playlist.id; });
         savePlaylists();
         state.view = { type: 'home' };
@@ -942,7 +952,13 @@ function newPlaylistId() {
 }
 
 function createPlaylist(name, keys) {
-  var playlist = { id: newPlaylistId(), name: name, keys: keys ? keys.slice() : [], createdAt: new Date().toISOString() };
+  var playlist = {
+    id: newPlaylistId(),
+    name: name,
+    keys: keys ? keys.slice() : [],
+    createdAt: new Date().toISOString(),
+    updatedAt: Date.now()
+  };
   state.playlists.push(playlist);
   savePlaylists();
   return playlist;
@@ -954,6 +970,7 @@ function toggleTrackInPlaylist(playlistId, key) {
   var index = playlist.keys.indexOf(key);
   if (index === -1) playlist.keys.push(key);
   else playlist.keys.splice(index, 1);
+  playlist.updatedAt = Date.now();
   savePlaylists();
   if (state.view.type === 'playlist' && state.view.id === playlistId) render();
   else renderPlaylistNav();
@@ -968,6 +985,7 @@ function openPlaylistDialog(existing, addKey) {
     onConfirm: function (name) {
       if (existing) {
         existing.name = name;
+        existing.updatedAt = Date.now();
         savePlaylists();
         render();
         return;
@@ -1118,8 +1136,12 @@ function openModal(opts) {
   el.modalBody.hidden = !opts.body;
   el.modalBody.textContent = opts.body || '';
   var sync = opts.sync === true;
+  var account = opts.account === true;
   el.syncFields.hidden = !sync;
-  el.modalInput.hidden = sync || opts.input === false;
+  el.accountFields.hidden = !account;
+  el.modalOk.hidden = account;
+  el.modalCancel.textContent = account ? 'Close' : 'Cancel';
+  el.modalInput.hidden = account || sync || opts.input === false;
   el.modalInput.value = opts.value || '';
   el.modalInput.placeholder = opts.placeholder || '';
   el.modalOk.textContent = opts.okLabel || 'Save';
@@ -1137,6 +1159,8 @@ function openModal(opts) {
 function closeModal() {
   el.modal.hidden = true;
   el.syncFields.hidden = true;
+  el.accountFields.hidden = true;
+  el.modalOk.hidden = false;
   modalAction = null;
 }
 
@@ -1262,7 +1286,70 @@ function loadRecommendations() {
   });
 }
 
-function openSyncDialog() {
+/* ------------------------------------------------------------------ *
+ * Account sync
+ * ------------------------------------------------------------------ */
+
+function formatSyncTime(value) {
+  var at = Number(value) || 0;
+  if (!at) return 'not synced yet';
+  var minutes = Math.round((Date.now() - at) / 60000);
+  if (minutes < 1) return 'synced just now';
+  if (minutes < 60) return 'synced ' + minutes + ' min ago';
+  var hours = Math.round(minutes / 60);
+  if (hours < 24) return 'synced ' + hours + ' h ago';
+  return 'synced on ' + new Date(at).toLocaleDateString();
+}
+
+function renderAccountPanel() {
+  if (!el.accountFields || el.accountFields.hidden) return;
+  if (!window.LocalMusicAccount) return;
+  var info = LocalMusicAccount.status();
+  if (!info.available) {
+    el.accountLine.textContent = 'Account sync runs in the desktop app and the Android build.';
+    el.accountSignIn.hidden = true;
+    el.accountSync.hidden = true;
+    el.accountSignOut.hidden = true;
+    el.accountHint.hidden = true;
+    return;
+  }
+  if (info.busy) {
+    el.accountLine.textContent = info.pendingCode
+      ? 'Waiting for approval in your browser\u2026'
+      : 'Contacting the sync service\u2026';
+  } else if (info.signedIn) {
+    el.accountLine.textContent = 'Signed in \u00b7 ' + formatSyncTime(info.lastSyncAt);
+  } else {
+    el.accountLine.textContent = 'Sign in with the same Freebuff account on your PC and phone to share liked songs, play counts and playlists.';
+  }
+  el.accountSignIn.hidden = info.signedIn;
+  el.accountSignIn.disabled = info.busy;
+  el.accountSync.hidden = !info.signedIn;
+  el.accountSync.disabled = info.busy;
+  el.accountSignOut.hidden = !info.signedIn;
+  el.accountSignOut.disabled = info.busy;
+  var hints = [];
+  if (info.error) hints.push(info.error);
+  if (info.pendingCode) hints.push('Approve the sign-in in your browser, then come back. Code ' + info.pendingCode.code + ' · ' + info.pendingCode.url);
+  if (info.signedIn && info.missing) {
+    hints.push(info.missing + ' liked song' + (info.missing === 1 ? '' : 's') + ' or playlist entr' + (info.missing === 1 ? 'y' : 'ies') +
+      ' from your account ' + (info.missing === 1 ? 'is' : 'are') + ' not in this device\u2019s library yet \u2014 sync or import the audio to see ' + (info.missing === 1 ? 'it' : 'them') + '.');
+  }
+  el.accountHint.textContent = hints.join(' ');
+  el.accountHint.hidden = !hints.length;
+}
+
+function openAccountDialog() {
+  if (!window.LocalMusicAccount) {
+    setBanner('info', 'Account sync runs in the desktop app and the Android build.', true);
+    return;
+  }
+  openModal({ title: 'Account sync', account: true });
+  renderAccountPanel();
+  LocalMusicAccount.refresh().then(renderAccountPanel);
+}
+
+function openLanSyncDialog() {
   if (DESKTOP && typeof DESKTOP.getSyncInfo === 'function') {
     Promise.resolve(DESKTOP.getSyncInfo()).then(function (info) {
       if (!info || !info.address) throw new Error('LAN sync could not start');
@@ -1367,7 +1454,7 @@ function buildPaletteItems() {
     command('Open listening stats', 'Navigation', function () { setView('stats'); }),
     command('Play all songs', 'Library', function () { playList(state.naturalOrder, null, 'Library'); }),
     command('Smart shuffle', 'Library', function () { state.shuffleMode = 'smart'; playList(state.naturalOrder, null, 'Smart shuffle'); }),
-    command('Sync library', 'Device', openSyncDialog),
+    command('Account sync', 'Device', openAccountDialog),
     command('Set sleep timer', 'Playback', function () { cycleSleepTimer(); })
   ];
   state.playlists.forEach(function (playlist) {
@@ -1566,8 +1653,26 @@ function bindEvents() {
       reader.readAsText(file);
     });
   }
-  if (el.syncLibraryBtn) el.syncLibraryBtn.addEventListener('click', openSyncDialog);
-  if (el.topSyncBtn) el.topSyncBtn.addEventListener('click', openSyncDialog);
+  if (el.syncLibraryBtn) el.syncLibraryBtn.addEventListener('click', openAccountDialog);
+  if (el.topSyncBtn) el.topSyncBtn.addEventListener('click', openAccountDialog);
+  if (el.accountSignIn) {
+    el.accountSignIn.addEventListener('click', function () {
+      renderAccountPanel();
+      LocalMusicAccount.signIn().then(renderAccountPanel);
+    });
+    el.accountSync.addEventListener('click', function () {
+      renderAccountPanel();
+      LocalMusicAccount.syncNow().then(renderAccountPanel);
+    });
+    el.accountSignOut.addEventListener('click', function () {
+      LocalMusicAccount.signOut().then(renderAccountPanel);
+    });
+    el.accountLan.addEventListener('click', function () {
+      closeModal();
+      openLanSyncDialog();
+    });
+    LocalMusicAccount.onChange(function () { renderAccountPanel(); });
+  }
   if (el.retryFailedBtn) el.retryFailedBtn.addEventListener('click', retryFailedImports);
   if (el.paletteBtn) el.paletteBtn.addEventListener('click', openPalette);
   if (el.palette) {
@@ -1802,6 +1907,7 @@ function boot() {
   render();
   loadLibrary().then(function () {
     if (state.pendingRestore) applyPendingRestore();
+    if (window.LocalMusicAccount) LocalMusicAccount.start();
   });
 }
 

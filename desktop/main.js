@@ -1,6 +1,7 @@
 'use strict';
 
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell, globalShortcut } = require('electron');
+const account = require('./account');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
@@ -711,6 +712,7 @@ ipcMain.handle('library:delete', function (event, key) { return deleteTrack(key)
 ipcMain.handle('library:attach-lyrics', function (event, key, content) { return attachLyrics(key, content); });
 ipcMain.handle('library:storage-info', function () { return storageInfo(); });
 ipcMain.handle('sync:info', function () { return getSyncInfo(); });
+account.registerIpc();
 
 app.setName('Local Music');
 

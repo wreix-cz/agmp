@@ -149,6 +149,16 @@
   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
     <h2 class="modal-title" id="modalTitle">New playlist</h2>
     <p class="modal-body" id="modalBody" hidden></p>
+    <div class="account-fields" id="accountFields" hidden>
+      <p class="account-line" id="accountLine"></p>
+      <div class="account-actions">
+        <button class="btn btn-primary" id="accountSignIn" type="button">Sign in with Freebuff</button>
+        <button class="btn btn-ghost" id="accountSync" type="button" hidden>Sync now</button>
+        <button class="btn btn-ghost" id="accountSignOut" type="button" hidden>Sign out</button>
+        <button class="btn btn-ghost" id="accountLan" type="button">LAN pairing</button>
+      </div>
+      <p class="account-hint" id="accountHint" hidden></p>
+    </div>
     <div class="sync-fields" id="syncFields" hidden>
       <label class="modal-label" for="syncHost">Desktop address</label>
       <input class="modal-input" id="syncHost" type="url" inputmode="url" placeholder="http://192.168.1.10:12345">
@@ -177,6 +187,7 @@
 
 <script src="ui/mobile.js"></script>
 <script src="ui/engine.js"></script>
+<script src="ui/account.js"></script>
 <script src="ui/ui.js"></script>
 </body>
 </html>

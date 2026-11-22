@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LAN sync talks to the desktop app over plain HTTP on the local network
+  (http://<desktop-ip>:<port>/api/sync/...). Android blocks cleartext by
+  default, which made pairing fail with "Cleartext HTTP traffic not permitted".
+  The WebView itself only ever loads https://localhost, so this only affects
+  the sync client, which talks to an address the user typed in themselves.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

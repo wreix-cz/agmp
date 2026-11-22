@@ -14,6 +14,7 @@ var REPEAT_MODES = ['off', 'all', 'one'];
 var SHUFFLE_MODES = ['off', 'shuffle', 'smart'];
 var STORAGE_KEY = 'localMusic.session.v2';
 var PLAYLISTS_KEY = 'localMusic.playlists.v1';
+var ACCOUNT_KEY = 'localMusic.account.v1';
 var STATS_KEY = 'localMusic.stats.v1';
 var MAX_CROSSFADE_SECONDS = 12;
 
@@ -85,6 +86,13 @@ var el = {
   syncHost: document.getElementById('syncHost'),
   syncCode: document.getElementById('syncCode'),
   crossfadeBtn: document.getElementById('crossfadeBtn'),
+  accountFields: document.getElementById('accountFields'),
+  accountLine: document.getElementById('accountLine'),
+  accountSignIn: document.getElementById('accountSignIn'),
+  accountSync: document.getElementById('accountSync'),
+  accountSignOut: document.getElementById('accountSignOut'),
+  accountLan: document.getElementById('accountLan'),
+  accountHint: document.getElementById('accountHint'),
   speedBtn: document.getElementById('speedBtn'),
   sleepBtn: document.getElementById('sleepBtn'),
   sleepCountdown: document.getElementById('sleepCountdown')
@@ -116,6 +124,9 @@ var state = {
   recent: [],
   likes: {},
   stats: {},
+  likeDecisions: {},
+  deletedPlaylists: {},
+  suppressAccountPush: false,
   playbackRate: 1,
   crossfade: 0,
   crossfadeTimer: null,
@@ -438,6 +449,7 @@ function buildTracks() {
       duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
       cover: typeof item.cover === 'string' ? item.cover : '',
       lyrics: typeof item.lyrics === 'string' ? item.lyrics : '',
+      needsReview: item.needsReview === true,
       storagePath: typeof item.storagePath === 'string' ? item.storagePath : '',
       syncKey: typeof item.syncKey === 'string' ? item.syncKey : '',
       sizeBytes: Number(item.sizeBytes) || 0,
@@ -504,6 +516,7 @@ function normalizePlaylistPayload(payload) {
       duration: Number(item.duration) || 0,
       cover: typeof item.cover === 'string' ? item.cover : '',
       lyrics: typeof item.lyrics === 'string' ? item.lyrics : '',
+      needsReview: item.needsReview === true,
       storagePath: typeof item.storagePath === 'string' ? item.storagePath : '',
       syncKey: typeof item.syncKey === 'string' ? item.syncKey : '',
       sizeBytes: Number(item.sizeBytes) || 0,
@@ -691,7 +704,7 @@ function currentTrack() {
 
 function notePlayed(key) {
   state.recent = [key].concat(state.recent.filter(function (item) { return item !== key; })).slice(0, 40);
-  var item = state.stats[key] || { plays: 0, skips: 0, seconds: 0, lastPlayedAt: 0, likedAt: 0 };
+  var item = state.stats[key] || { plays: 0, skips: 0, seconds: 0, lastPlayedAt: 0 };
   item.plays += 1;
   item.lastPlayedAt = Date.now();
   item.lastPlayed = item.lastPlayedAt;
@@ -701,7 +714,7 @@ function notePlayed(key) {
 
 function notePlaybackSeconds(key, seconds) {
   if (!key || !Number.isFinite(seconds) || seconds <= 0) return;
-  var item = state.stats[key] || { plays: 0, skips: 0, seconds: 0, lastPlayedAt: 0, likedAt: 0 };
+  var item = state.stats[key] || { plays: 0, skips: 0, seconds: 0, lastPlayedAt: 0 };
   item.seconds += seconds;
   state.stats[key] = item;
   persistStats();
@@ -709,7 +722,7 @@ function notePlaybackSeconds(key, seconds) {
 
 function noteSkip(key) {
   if (!key) return;
-  var item = state.stats[key] || { plays: 0, skips: 0, seconds: 0, lastPlayedAt: 0, likedAt: 0 };
+  var item = state.stats[key] || { plays: 0, skips: 0, seconds: 0, lastPlayedAt: 0 };
   item.skips += 1;
   state.stats[key] = item;
   persistStats();
@@ -1020,6 +1033,239 @@ function persistStats() {
   writeStore(STATS_KEY, { likes: state.likes, stats: state.stats, updatedAt: new Date().toISOString() });
 }
 
+/* ------------------------------------------------------------------ *
+ * Account state (likes, play counts and playlists shared by devices)
+ *
+ * Everything is addressed by a stable reference: the importer's syncKey when
+ * the track has one, otherwise the file name. Audio itself stays local, so a
+ * reference may not resolve on this device; those are kept in `pending` so a
+ * later sync after the file arrives still restores the playlist.
+ * ------------------------------------------------------------------ */
+
+function trackRef(key) {
+  var track = state.tracks.get(key);
+  return (track && track.syncKey) || key;
+}
+
+function keyForRef(ref) {
+  if (state.tracks.has(ref)) return ref;
+  var found = null;
+  state.tracks.forEach(function (track, key) {
+    if (!found && track.syncKey === ref) found = key;
+  });
+  return found;
+}
+
+function persistAccountState() {
+  writeStore(ACCOUNT_KEY, {
+    likeDecisions: state.likeDecisions,
+    deletedPlaylists: state.deletedPlaylists
+  });
+}
+
+function playlistStamp(playlist) {
+  if (!playlist) return 0;
+  return Number(playlist.updatedAt) || Date.parse(playlist.createdAt) || 0;
+}
+
+function noteAccountChange() {
+  if (state.suppressAccountPush) return;
+  if (window.LocalMusicAccount) window.LocalMusicAccount.noteLocalChange();
+}
+
+function accountSnapshot() {
+  var likes = [];
+  var seen = {};
+  Object.keys(state.likeDecisions).forEach(function (ref) {
+    var decision = state.likeDecisions[ref];
+    if (!decision || !Number(decision.at)) return;
+    seen[ref] = true;
+    likes.push({ ref: ref, likedAt: Number(decision.likedAt) || 0, at: Number(decision.at) });
+  });
+  // Likes saved before account sync existed have no decision record yet.
+  // The like's own timestamp is the decision time; stamping "now" here would
+  // let an old local like keep overwriting a newer unlike from another device.
+  Object.keys(state.likes).forEach(function (key) {
+    var ref = trackRef(key);
+    if (seen[ref]) return;
+    var at = Number(state.likes[key]) || 0;
+    if (!at) return;
+    seen[ref] = true;
+    likes.push({ ref: ref, likedAt: at, at: at });
+  });
+
+  var stats = [];
+  var statsSeen = {};
+  Object.keys(state.stats).forEach(function (key) {
+    var item = state.stats[key];
+    if (!item) return;
+    var ref = trackRef(key);
+    var current = statsSeen[ref];
+    var row = {
+      ref: ref,
+      plays: Number(item.plays) || 0,
+      skips: Number(item.skips) || 0,
+      seconds: Number(item.seconds) || 0,
+      lastPlayedAt: Number(item.lastPlayedAt) || 0
+    };
+    if (current) {
+      current.plays = Math.max(current.plays, row.plays);
+      current.skips = Math.max(current.skips, row.skips);
+      current.seconds = Math.max(current.seconds, row.seconds);
+      current.lastPlayedAt = Math.max(current.lastPlayedAt, row.lastPlayedAt);
+      return;
+    }
+    statsSeen[ref] = row;
+    stats.push(row);
+  });
+
+  var playlists = state.playlists.map(function (playlist) {
+    return {
+      id: playlist.id,
+      name: playlist.name,
+      createdAt: playlist.createdAt || '',
+      updatedAt: playlistStamp(playlist),
+      deletedAt: 0,
+      refs: playlist.keys.map(trackRef).concat(playlist.pending || [])
+    };
+  });
+  Object.keys(state.deletedPlaylists).forEach(function (id) {
+    if (state.playlists.some(function (item) { return item.id === id; })) return;
+    playlists.push({
+      id: id,
+      name: '',
+      createdAt: '',
+      updatedAt: Number(state.deletedPlaylists[id]) || 0,
+      deletedAt: Number(state.deletedPlaylists[id]) || 0,
+      refs: []
+    });
+  });
+
+  return { likes: likes, stats: stats, playlists: playlists };
+}
+
+function accountMissingCount() {
+  var missing = 0;
+  var counted = {};
+  var resolvable = {};
+  state.tracks.forEach(function (track, key) {
+    resolvable[key] = true;
+    if (track.syncKey) resolvable[track.syncKey] = true;
+  });
+  Object.keys(state.likes).forEach(function (key) {
+    var ref = trackRef(key);
+    if (resolvable[ref] || counted[ref]) return;
+    counted[ref] = true;
+    missing += 1;
+  });
+  // Likes from other devices whose audio is not here yet only exist as decisions.
+  Object.keys(state.likeDecisions).forEach(function (ref) {
+    var decision = state.likeDecisions[ref];
+    if (!decision || !Number(decision.likedAt)) return;
+    if (resolvable[ref] || counted[ref]) return;
+    counted[ref] = true;
+    missing += 1;
+  });
+  state.playlists.forEach(function (playlist) { missing += (playlist.pending || []).length; });
+  return missing;
+}
+
+function applyAccountState(remote) {
+  if (!remote) return false;
+  var changed = false;
+  var remoteLikes = Array.isArray(remote.likes) ? remote.likes : [];
+  var remoteStats = Array.isArray(remote.stats) ? remote.stats : [];
+  var remotePlaylists = Array.isArray(remote.playlists) ? remote.playlists : [];
+
+  remoteLikes.forEach(function (row) {
+    if (!row || typeof row.ref !== 'string') return;
+    var known = state.likeDecisions[row.ref];
+    var winner = known && Number(known.at) >= Number(row.at || 0)
+      ? known
+      : { likedAt: Number(row.likedAt) || 0, at: Number(row.at) || 0 };
+    state.likeDecisions[row.ref] = winner;
+    var key = keyForRef(row.ref);
+    if (!key) return;
+    if (Number(winner.likedAt) > 0) {
+      if (state.likes[key] !== Number(winner.likedAt)) { state.likes[key] = Number(winner.likedAt); changed = true; }
+    } else if (state.likes[key]) {
+      delete state.likes[key];
+      changed = true;
+    }
+  });
+
+  remoteStats.forEach(function (row) {
+    if (!row || typeof row.ref !== 'string') return;
+    var key = keyForRef(row.ref);
+    if (!key) return;
+    var local = trackStats(key);
+    var next = {
+      plays: Math.max(Number(local.plays) || 0, Number(row.plays) || 0),
+      skips: Math.max(Number(local.skips) || 0, Number(row.skips) || 0),
+      seconds: Math.max(Number(local.seconds) || 0, Number(row.seconds) || 0),
+      lastPlayedAt: Math.max(Number(local.lastPlayedAt) || 0, Number(row.lastPlayedAt) || 0)
+    };
+    if (next.plays !== local.plays || next.skips !== local.skips ||
+        next.seconds !== local.seconds || next.lastPlayedAt !== local.lastPlayedAt) changed = true;
+    state.stats[key] = next;
+  });
+
+  remotePlaylists.forEach(function (row) {
+    if (!row || typeof row.id !== 'string') return;
+    var local = null;
+    for (var index = 0; index < state.playlists.length; index += 1) {
+      if (state.playlists[index].id === row.id) { local = state.playlists[index]; break; }
+    }
+    var localUpdated = playlistStamp(local);
+    if (Number(row.updatedAt) <= localUpdated) return;
+    if (Number(row.deletedAt) > 0) {
+      if (!local) return;
+      state.playlists = state.playlists.filter(function (item) { return item.id !== row.id; });
+      state.deletedPlaylists[row.id] = Number(row.deletedAt);
+      changed = true;
+      return;
+    }
+    var keys = [];
+    var pending = [];
+    (Array.isArray(row.refs) ? row.refs : []).forEach(function (ref) {
+      var key = keyForRef(ref);
+      if (key) { if (keys.indexOf(key) === -1) keys.push(key); }
+      else if (pending.indexOf(ref) === -1) pending.push(ref);
+    });
+    if (local) {
+      local.name = String(row.name || local.name || 'Playlist');
+      local.keys = keys;
+      local.pending = pending;
+      local.updatedAt = Number(row.updatedAt) || Date.now();
+      local.createdAt = local.createdAt || String(row.createdAt || '');
+    } else {
+      state.playlists.push({
+        id: row.id,
+        name: String(row.name || 'Playlist'),
+        keys: keys,
+        pending: pending,
+        createdAt: String(row.createdAt || ''),
+        updatedAt: Number(row.updatedAt) || Date.now()
+      });
+    }
+    delete state.deletedPlaylists[row.id];
+    changed = true;
+  });
+
+  state.suppressAccountPush = true;
+  try {
+    persistAccountState();
+    if (changed) {
+      persistStats();
+      savePlaylists();
+      render();
+    }
+  } finally {
+    state.suppressAccountPush = false;
+  }
+  return changed;
+}
+
 function restorePrefs() {
   var prefs = readStore(STORAGE_KEY, null);
   if (prefs) {
@@ -1047,6 +1293,15 @@ function restorePrefs() {
   var stats = readStore(STATS_KEY, null);
   if (stats && stats.likes && typeof stats.likes === 'object') state.likes = stats.likes;
   if (stats && stats.stats && typeof stats.stats === 'object') state.stats = stats.stats;
+  var accountState = readStore(ACCOUNT_KEY, null);
+  if (accountState) {
+    if (accountState.likeDecisions && typeof accountState.likeDecisions === 'object') {
+      state.likeDecisions = accountState.likeDecisions;
+    }
+    if (accountState.deletedPlaylists && typeof accountState.deletedPlaylists === 'object') {
+      state.deletedPlaylists = accountState.deletedPlaylists;
+    }
+  }
   var playlists = readStore(PLAYLISTS_KEY, []);
   state.playlists = Array.isArray(playlists)
     ? playlists.filter(function (item) {
@@ -1056,7 +1311,11 @@ function restorePrefs() {
           id: item.id,
           name: item.name,
           keys: item.keys.filter(function (key) { return typeof key === 'string'; }),
-          createdAt: item.createdAt || ''
+          pending: Array.isArray(item.pending)
+            ? item.pending.filter(function (ref) { return typeof ref === 'string'; })
+            : [],
+          createdAt: item.createdAt || '',
+          updatedAt: Number(item.updatedAt) || Date.parse(item.createdAt) || 0
         };
       })
     : [];
@@ -1064,16 +1323,18 @@ function restorePrefs() {
 
 function toggleLike(key) {
   if (!key) return false;
-  var item = state.stats[key] || { plays: 0, skips: 0, seconds: 0, lastPlayedAt: 0, likedAt: 0 };
+  var likedAt = 0;
   if (state.likes[key]) {
     delete state.likes[key];
-    item.likedAt = 0;
   } else {
     state.likes[key] = Date.now();
-    item.likedAt = state.likes[key];
+    likedAt = state.likes[key];
   }
-  state.stats[key] = item;
+  state.stats[key] = trackStats(key);
+  state.likeDecisions[trackRef(key)] = { likedAt: likedAt, at: Date.now() };
   persistStats();
+  persistAccountState();
+  noteAccountChange();
   render();
   return Boolean(state.likes[key]);
 }
@@ -1083,11 +1344,12 @@ function isLiked(key) {
 }
 
 function trackStats(key) {
-  return state.stats[key] || { plays: 0, skips: 0, seconds: 0, lastPlayedAt: 0, likedAt: 0 };
+  return state.stats[key] || { plays: 0, skips: 0, seconds: 0, lastPlayedAt: 0 };
 }
 
 function savePlaylists() {
   if (!writeStore(PLAYLISTS_KEY, state.playlists)) {
     setBanner('warn', 'Storage is unavailable, so playlists cannot be saved here.', true);
   }
+  noteAccountChange();
 }

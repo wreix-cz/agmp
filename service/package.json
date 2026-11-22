@@ -1,0 +1,1 @@
+{"name":"local-music-sync","private":true,"version":"1.0.0","type":"module","dependencies":{"@freebuff/auth":"^0.1.0"},"devDependencies":{"wrangler":"^4.166.0"}}

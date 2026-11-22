@@ -72,6 +72,11 @@ DEFAULT_JSON_PATH = APP_DIR / "tracks.json"
 
 MANIFEST_VERSION = 2
 DEFAULT_BITRATE = "192k"
+# Chromium/Electron and Android WebView decode 48 kHz stereo AAC everywhere;
+# 96 kHz (which ffmpeg's loudnorm stage produces if it is left unconstrained)
+# doubles storage for no audible gain and fails on some Bluetooth/WebView paths.
+TARGET_SAMPLE_RATE = 48000
+TARGET_CHANNELS = 2
 DEFAULT_SEARCH_RESULTS = 5
 DEFAULT_MIN_SCORE = 25.0
 DEFAULT_JOBS = min(4, max(1, os.cpu_count() or 1))
@@ -1632,7 +1637,7 @@ def probe_audio_info(path: Path) -> dict[str, Any]:
                 "-select_streams",
                 "a:0",
                 "-show_entries",
-                "stream=codec_name,bit_rate:format=duration",
+                "stream=codec_name,bit_rate,sample_rate,channels:format=duration",
                 "-of",
                 "json",
                 str(path),
@@ -1747,15 +1752,30 @@ def transcode_to_m4a(
         not normalize
         and source.suffix.casefold() in {".m4a", ".mp4", ".aac"}
         and str(source_info.get("codec_name") or "").casefold() == "aac"
+        and int(as_float(source_info.get("sample_rate"))) == TARGET_SAMPLE_RATE
+        and int(as_float(source_info.get("channels"))) in (1, TARGET_CHANNELS)
         and target_bitrate
         and source_bitrate
         and source_bitrate <= target_bitrate
     ):
         command.extend(["-c:a", "copy"])
     else:
-        command.extend(["-c:a", "aac", "-b:a", bitrate, "-threads", "0"])
+        command.extend(
+            [
+                "-c:a",
+                "aac",
+                "-b:a",
+                bitrate,
+                "-profile:a",
+                "aac_low",
+                "-threads",
+                "0",
+            ]
+        )
     if normalize:
         command.extend(["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"])
+    # Must come after the filter chain: loudnorm otherwise leaves a 96 kHz stream.
+    command.extend(["-ar", str(TARGET_SAMPLE_RATE), "-ac", str(TARGET_CHANNELS)])
     command.append(str(destination))
 
     try:
@@ -2084,6 +2104,156 @@ def process_track(
 # Library verification
 # --------------------------------------------------------------------------- #
 
+def library_orphans(manifest: Manifest) -> list[Path]:
+    """Audio files on disk that no manifest record points at (e.g. renamed or removed)."""
+    if not AUDIO_DIR.is_dir():
+        return []
+    with manifest.lock:
+        known = {
+            str(record.get("fileName") or "").casefold()
+            for record in manifest.tracks.values()
+        }
+    return [
+        path
+        for path in sorted(AUDIO_DIR.iterdir())
+        if path.is_file() and not path.name.startswith(".") and path.name.casefold() not in known
+    ]
+
+
+def prune_orphans(manifest: Manifest) -> int:
+    orphans = library_orphans(manifest)
+    if not orphans:
+        print("No orphan audio files: every file in library/audio is referenced by the manifest.")
+        return 0
+    freed = 0
+    removed = 0
+    for path in orphans:
+        try:
+            size = path.stat().st_size
+            path.unlink()
+        except OSError as exc:
+            warn(f"could not delete {path.name}: {exc}")
+            continue
+        freed += size
+        removed += 1
+        print(f"PRUNED   {path.name} ({size / (1024 * 1024):.1f} MiB, not in manifest)")
+    export_library(manifest)
+    print(f"Removed {removed} orphan file(s), freed {freed / (1024 * 1024):.1f} MiB")
+    return 0 if removed == len(orphans) else 1
+
+
+def reencode_library(sample_rate: int = TARGET_SAMPLE_RATE, bitrate: str = DEFAULT_BITRATE) -> int:
+    """Re-encode existing library files to the playback-friendly format, in place and atomically."""
+    manifest = Manifest()
+    records = manifest.ordered_records()
+    if not records:
+        print("Library is empty: nothing to re-encode.")
+        return 1
+    ffmpeg = find_ffmpeg()
+    changed = 0
+    skipped = 0
+    failed = 0
+    freed = 0
+    print(f"Re-encoding {len(records)} file(s) to {sample_rate} Hz stereo AAC {bitrate}")
+    print("-" * 78)
+    for record in records:
+        filename = str(record.get("fileName") or "")
+        path = AUDIO_DIR / filename
+        label = f"{record.get('artist') or 'Unknown'} - {record.get('title') or filename}"
+        if not filename or not path.is_file():
+            print(f"MISSING  {label}")
+            failed += 1
+            continue
+        info = probe_audio_info(path)
+        rate = int(as_float(info.get("sample_rate")))
+        channels = int(as_float(info.get("channels")))
+        if (
+            str(info.get("codec_name") or "").casefold() == "aac"
+            and rate == sample_rate
+            and channels in (1, TARGET_CHANNELS)
+            and path.suffix.casefold() == ".m4a"
+        ):
+            skipped += 1
+            continue
+
+        before = path.stat().st_size
+        temp = TMP_DIR / f".{path.stem}.{uuid.uuid4().hex}.reencode.m4a"
+        source = record.get("source") or {}
+        command = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(path),
+            "-vn",
+            "-map_metadata",
+            "-1",
+            "-metadata",
+            f"title={record.get('title') or ''}",
+            "-metadata",
+            f"artist={record.get('artist') or 'Unknown artist'}",
+            "-metadata",
+            f"album={record.get('album') or 'Local Library'}",
+            "-metadata",
+            f"comment=Imported from {source.get('url') or 'local file'}",
+            "-metadata",
+            "encoded_by=local-music-app",
+            "-c:a",
+            "aac",
+            "-b:a",
+            bitrate,
+            "-profile:a",
+            "aac_low",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            str(TARGET_CHANNELS),
+            "-threads",
+            "0",
+            "-movflags",
+            "+faststart",
+            str(temp),
+        ]
+        try:
+            result = run_command(command, timeout=1800)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            warn(f"{label}: {exc}")
+            temp.unlink(missing_ok=True)
+            failed += 1
+            continue
+        if result.returncode != 0 or not temp.is_file() or temp.stat().st_size < 1024:
+            detail = (result.stderr or "").strip().splitlines()
+            warn(f"{label}: {detail[-1] if detail else 'ffmpeg failed'}")
+            temp.unlink(missing_ok=True)
+            failed += 1
+            continue
+        duration = probe_duration(temp) or as_float(record.get("duration"))
+        with manifest.lock:
+            os.replace(temp, path)
+            fsync_dir(AUDIO_DIR)
+            record["duration"] = round(float(duration or 0.0), 2)
+            record["sizeBytes"] = path.stat().st_size
+            record["sampleRate"] = sample_rate
+            record["reencodedAt"] = iso_now()
+            manifest.save()
+        freed += before - record["sizeBytes"]
+        changed += 1
+        log(
+            f"re-encoded: {filename} "
+            f"({before / (1024 * 1024):.2f} -> {record['sizeBytes'] / (1024 * 1024):.2f} MiB)"
+        )
+    print("-" * 78)
+    if changed:
+        export_library(manifest)
+    print(
+        f"Re-encoded {changed}; already {sample_rate} Hz {skipped}; failed {failed}; "
+        f"size change {freed / (1024 * 1024):+.1f} MiB"
+    )
+    return 0 if failed == 0 else 1
+
+
 def verify_library(manifest: Manifest) -> int:
     records = manifest.ordered_records()
     if not records:
@@ -2115,6 +2285,12 @@ def verify_library(manifest: Manifest) -> int:
         if duration and stored and abs(duration - stored) > 3:
             note = f" (manifest says {stored:.1f}s)"
         print(f"OK       {label}  [{size / (1024 * 1024):.1f} MiB, {duration_text}]{note}")
+
+    for path in library_orphans(manifest):
+        print(f"ORPHAN   {path.name} ({path.stat().st_size / (1024 * 1024):.1f} MiB, not in manifest)")
+        problems += 1
+    if library_orphans(manifest):
+        print("         remove these with --prune-orphans")
 
     print("-" * 78)
     try:
@@ -2180,6 +2356,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="print the resolved track list without downloading")
     parser.add_argument("--export-only", action="store_true", help="only regenerate playlist.json and playlist.m3u8")
     parser.add_argument("--verify", action="store_true", help="check the library files and refresh exports")
+    parser.add_argument(
+        "--prune-orphans",
+        action="store_true",
+        help="delete audio files in library/audio that the manifest does not reference",
+    )
+    parser.add_argument(
+        "--reencode",
+        action="store_true",
+        help=f"re-encode library files to {TARGET_SAMPLE_RATE} Hz stereo AAC in place",
+    )
     parser.add_argument("--covers", action="store_true", help="backfill missing cover art from manifest source ids")
     parser.add_argument("--remove", metavar="KEY", help="remove one normalized track key and its owned files")
     parser.add_argument("--attach-lyrics", metavar="KEY", help="read an LRC sidecar from stdin and attach it to a track")
@@ -2519,6 +2705,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.input or args.link or args.playlist or args.retry_failed:
                 parser.error("--covers cannot be combined with an input, playlist link, or --retry-failed")
             return backfill_covers(args.cookies_from_browser)
+        if args.reencode:
+            if args.input or args.link or args.playlist or args.retry_failed or args.remove or args.attach_lyrics:
+                parser.error("--reencode cannot be combined with an import, --remove, or --attach-lyrics")
+            return reencode_library(bitrate=args.bitrate)
+        if args.prune_orphans:
+            if args.input or args.link or args.playlist or args.retry_failed:
+                parser.error("--prune-orphans cannot be combined with an input or playlist link")
+            return prune_orphans(Manifest())
         if args.export_only:
             manifest = Manifest()
             count = export_library(manifest)

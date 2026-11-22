@@ -1,0 +1,18 @@
+{
+  // Local development only. Deployed variables are injected by Sites.
+  "name": "local-music-sync",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-01",
+  "vars": {
+    "FREEBUFF_CLIENT_ID": "ad5b03b6-7660-45cb-93c0-870d7c8c8a27",
+    "FREEBUFF_ISSUER": "https://freebuff.com/oidc",
+    "APP_ORIGIN": "http://localhost:8787"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "local-music-sync",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

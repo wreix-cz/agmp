@@ -14,6 +14,8 @@
   var http = plugins && plugins.CapacitorHttp ? plugins.CapacitorHttp : null;
   var DATA = 'DATA';
   var PLAYLIST_PATH = 'library/playlist.json';
+  var ACCOUNT_PATH = 'account/session.json';
+  var ACCOUNT_SERVICE = 'https://local-music-sync-o7uah6-preview.freebuff.site';
   var MAX_IMPORT_BYTES = 512 * 1024 * 1024;
 
   function isAvailable() {
@@ -381,6 +383,145 @@
     }
   }
 
+  /* ---------------------------------------------------------------- *
+   * Account session
+   *
+   * The device token lives in the app's private data directory. Requests go
+   * through CapacitorHttp so the WebView's https://localhost origin never has
+   * to be allowed by CORS.
+   * ---------------------------------------------------------------- */
+
+  async function readAccount() {
+    var text = await readText(ACCOUNT_PATH);
+    if (!text) return null;
+    try {
+      var payload = JSON.parse(text);
+      return payload && typeof payload.token === 'string' ? payload : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async function writeAccount(session) {
+    await ensureDirectories();
+    try {
+      await filesystem.mkdir({ path: 'account', directory: DATA, recursive: true });
+    } catch (error) {
+      /* already present */
+    }
+    await filesystem.writeFile({
+      path: ACCOUNT_PATH,
+      directory: DATA,
+      encoding: 'utf8',
+      data: JSON.stringify(session)
+    });
+    return true;
+  }
+
+  async function clearAccount() {
+    await removeFile(ACCOUNT_PATH);
+  }
+
+  async function accountStatus() {
+    var session = await readAccount();
+    return {
+      signedIn: Boolean(session),
+      name: session && session.name ? String(session.name) : '',
+      lastSyncAt: session ? Number(session.lastSyncAt) || 0 : 0
+    };
+  }
+
+  async function accountCall(pathname, options) {
+    if (!http || typeof http.request !== 'function') throw new Error('Android networking is unavailable in this build.');
+    var opts = options || {};
+    var session = await readAccount();
+    var headers = { 'Content-Type': 'application/json' };
+    if (opts.auth !== false && session) headers.Authorization = 'Bearer ' + session.token;
+    var response = await http.request({
+      url: ACCOUNT_SERVICE + pathname,
+      method: opts.method || 'GET',
+      headers: headers,
+      data: opts.body ? JSON.stringify(opts.body) : undefined,
+      responseType: 'json',
+      connectTimeout: 15000,
+      readTimeout: 30000
+    });
+    var payload = response ? response.data : null;
+    if (typeof payload === 'string') {
+      try { payload = JSON.parse(payload); } catch (error) { payload = null; }
+    }
+    return { status: Number(response && response.status) || 0, payload: payload };
+  }
+
+  async function openExternal(url) {
+    var browser = plugins && plugins.Browser ? plugins.Browser : null;
+    if (browser && typeof browser.open === 'function') {
+      await browser.open({ url: url });
+      return;
+    }
+    window.open(url, '_system');
+  }
+
+  async function accountStart() {
+    var result = await accountCall('/api/device/start', {
+      method: 'POST',
+      auth: false,
+      body: { name: 'Android', platform: 'android' }
+    });
+    var payload = result.payload;
+    if (result.status !== 200 || !payload || !payload.deviceCode) {
+      return { ok: false, error: (payload && payload.error) || 'the sync service did not start a sign-in' };
+    }
+    await openExternal(payload.verificationUrl);
+    return {
+      ok: true,
+      deviceCode: payload.deviceCode,
+      code: payload.code,
+      verificationUrl: payload.verificationUrl,
+      interval: Number(payload.interval) || 3,
+      expiresIn: Number(payload.expiresIn) || 600
+    };
+  }
+
+  async function accountPoll(deviceCode) {
+    var result = await accountCall('/api/device/poll', {
+      method: 'POST',
+      auth: false,
+      body: { deviceCode: String(deviceCode || '') }
+    });
+    var payload = result.payload;
+    if (result.status === 202) return { ok: true, pending: true };
+    if (result.status !== 200 || !payload || !payload.token) {
+      return { ok: false, error: (payload && payload.error) || 'sign-in was not approved' };
+    }
+    await writeAccount({
+      token: payload.token,
+      deviceId: payload.deviceId || '',
+      name: (payload.account && payload.account.name) || '',
+      lastSyncAt: Date.now()
+    });
+    return { ok: true, pending: false, account: await accountStatus() };
+  }
+
+  async function accountSync(snapshot) {
+    var result = await accountCall('/api/state', { method: 'POST', body: snapshot || {} });
+    if (result.status !== 200 || !result.payload) {
+      return { ok: false, error: (result.payload && result.payload.error) || 'the sync service refused the update' };
+    }
+    var session = await readAccount();
+    if (session) {
+      session.lastSyncAt = Date.now();
+      await writeAccount(session);
+    }
+    return { ok: true, state: result.payload, account: await accountStatus() };
+  }
+
+  async function accountSignOut() {
+    try { await accountCall('/api/signout', { method: 'POST' }); } catch (error) { /* the token is dropped anyway */ }
+    await clearAccount();
+    return { ok: true, account: await accountStatus() };
+  }
+
   global.LocalMusicMobile = {
     available: isAvailable,
     readPlaylist: readPlaylist,
@@ -389,6 +530,11 @@
     syncFromDesktop: syncFromDesktop,
     fileUrl: fileUrl,
     storageInfo: storageInfo,
-    filePath: filePath
+    filePath: filePath,
+    accountStatus: accountStatus,
+    accountStart: accountStart,
+    accountPoll: accountPoll,
+    accountSync: accountSync,
+    accountSignOut: accountSignOut
   };
 })(window);

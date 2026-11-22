@@ -48,7 +48,7 @@ bundled importer tools and a signed Play Store release are not yet complete.
 - Likes, play counts, skips and listened-time statistics
 - Playback speed, crossfade, sleep timer, seek, repeat and volume controls
 - Keyboard shortcuts and command palette
-- LAN pairing and library sync
+- Account sync for likes, play counts and playlists, plus LAN pairing for the audio itself
 - Android private-storage imports and collision-safe filenames
 - Desktop track deletion and storage readout
 - Crash-safe manifest/export writes and offline retry queue
@@ -61,11 +61,14 @@ bundled importer tools and a signed Play Store release are not yet complete.
 ├── ui/
 │   ├── engine.js            Playback, queue, persistence and library state
 │   ├── ui.js                Rendering and UI interactions
-│   ├── mobile.js            Capacitor storage and LAN sync
+│   ├── account.js           Account sign-in and state sync client
+│   ├── mobile.js            Capacitor storage, LAN sync and account transport
 │   └── app.css              Shared responsive styles
 ├── importer.py              Playlist, matching, download and export pipeline
+├── service/                 Sync Worker (D1 + Sign in with Freebuff)
 ├── desktop/
 │   ├── main.js              Electron process and local library server
+│   ├── account.js           Device sign-in, encrypted token storage, state API
 │   └── preload.js           Restricted desktop bridge
 ├── scripts/sync-web.mjs     Generates the Capacitor web bundle
 ├── tests/test_importer.py   Offline importer regression tests
@@ -294,9 +297,43 @@ The Android app supports:
 - Synced covers and `.lrc` lyrics
 - Restart persistence
 
-A public Android release still requires JDK/SDK pinning, signed APK/AAB builds and device validation.
-The JDK 25 host currently used for development cannot build this Android project; Gradle rejects
-class-file major version 69.
+The Android build needs **JDK 17–21**; a newer host JDK (e.g. 25) fails Gradle with
+`Unsupported class file major version 69`. Point `JAVA_HOME` at a compatible JDK, for example the
+bundled toolchain used here:
+
+```bash
+export JAVA_HOME=$PWD/.toolchain/jdk
+export ANDROID_HOME=$PWD/.toolchain/sdk
+export GRADLE_USER_HOME=$PWD/.toolchain/gradle-home
+npm run mobile:build     # verified: BUILD SUCCESSFUL in ~2 min
+```
+
+A public Android release still requires pinned SDK versions, signed APK/AAB builds and device
+validation.
+
+## Account sync
+
+Liked songs, play counts and playlists live on your account, so the PC and the phone show the same
+state. **Audio is never uploaded.** Each device keeps its own files and matches them by the importer's
+`syncKey`, so the account tells the other device what is missing rather than shipping the music.
+
+1. Open Sync → **Sign in with Freebuff**. The app shows a six-digit code and opens the sign-in page.
+2. Approve the code in the browser, signed in to the account you want.
+3. Repeat on the other device with the same Freebuff account. Sync runs on launch, after a change
+   (debounced) and whenever you press **Sync now**.
+
+The sync dialog also reports any liked song or playlist entry whose audio is not on this device yet;
+use LAN pairing or device import to bring the file over, and the entry resolves on the next sync.
+
+Merging is last-writer-wins per like, per playlist and per play-count field; deleted playlists carry
+`deletedAt` tombstones so a delete does not come back from the other device. Play counts take the
+maximum from both devices rather than summing, so a play is never counted twice.
+
+The service is a Cloudflare Worker in `service/` (D1 for state, Sign in with Freebuff for identity).
+Device tokens are random 32-byte bearer tokens kept encrypted by `safeStorage` on desktop and in
+app-private storage on Android; the renderer never sees them, every request is scoped by the token's
+`sub`, and signing out revokes that device. See [`service/README.md`](service/README.md) to run it
+locally.
 
 ## LAN sync
 
@@ -310,6 +347,16 @@ separators, null bytes and path-like names are rejected.
 
 Both devices must be on the same network. The desktop server binds to all LAN interfaces on a random
 port. Only enable it when you intentionally want to pair a device.
+
+Sync uses plain HTTP, because the desktop side is a loopback-quality server with no certificate. The
+Android build therefore permits cleartext traffic (`res/xml/network_security_config.xml`); without it
+every pairing fails with `Cleartext HTTP traffic to <ip> not permitted`. The WebView itself only ever
+loads `https://localhost`, so this setting only affects the sync client talking to an address the user
+typed in.
+
+The first sync copies every track whose `syncKey` is not already on the device (the bundled APK
+library is not counted as synced storage). Later syncs are incremental: a second sync of an unchanged
+library transfers 0 bytes.
 
 ## Importer reference
 
@@ -332,6 +379,13 @@ The importer:
 - Uses metadata, ISRC and match-margin information when available
 - Records failed candidates for later reconstruction
 
+Imported audio is always AAC `.m4a`, 48 kHz stereo. That combination is what Chromium, Electron and
+Android WebView all decode reliably; ffmpeg's loudness stage otherwise leaves a 96 kHz stream, which
+some Bluetooth and WebView paths handle badly.
+
+When the top match barely beats the runner-up, the manifest entry is marked `needsReview` and the row
+shows a small `review` tag in the Songs list (type `review` in the search box to list them).
+
 ### Spotify credentials
 
 Without credentials, Spotify import falls back to the public embed page and may be limited to roughly
@@ -352,12 +406,25 @@ Create an app in the Spotify Developer Dashboard. Do not commit credentials or p
 
 ```bash
 python3 importer.py --covers
-python3 importer.py --attach-lyrics "Artist - Title" /path/to/file.lrc
+python3 importer.py --attach-lyrics "Artist - Title" < /path/to/file.lrc
 python3 importer.py --remove "Artist - Title"
 ```
 
 Cover and lyrics files are stored separately and referenced by the manifest and playlist exports.
 Removal only deletes assets owned by the selected manifest entry.
+
+### Library maintenance
+
+```bash
+python3 importer.py --verify          # files present and decodable, durations, orphan files
+python3 importer.py --prune-orphans   # delete audio in library/audio that the manifest does not reference
+python3 importer.py --reencode        # re-encode existing files to 48 kHz stereo AAC, in place
+```
+
+`--verify` reports orphan audio (for example after a rename or a removed track) as a problem;
+`--prune-orphans` deletes exactly those files and refreshes the exports. `--reencode` rewrites each
+non-conforming file through a temporary file and an atomic replace, so an interrupted run leaves the
+original intact.
 
 ## Player controls
 

@@ -41,6 +41,13 @@ contextBridge.exposeInMainWorld('localMusic', {
   getSyncInfo: function () {
     return ipcRenderer.invoke('sync:info');
   },
+  account: {
+    status: function () { return ipcRenderer.invoke('account:status'); },
+    start: function () { return ipcRenderer.invoke('account:start'); },
+    poll: function (deviceCode) { return ipcRenderer.invoke('account:poll', String(deviceCode || '')); },
+    sync: function (snapshot) { return ipcRenderer.invoke('account:sync', snapshot || {}); },
+    signOut: function () { return ipcRenderer.invoke('account:signout'); }
+  },
   onImportEvent: function (callback) {
     function listener(event, payload) {
       callback(payload);
